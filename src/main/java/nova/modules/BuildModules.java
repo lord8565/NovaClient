@@ -184,6 +184,7 @@ public final class BuildModules {
         int finalY = -1;                                     // final check before "finished": next layer to verify
         int chkY = Integer.MIN_VALUE, chkTotal, chkMissing, chkTick = -9999;   // result of the last check, shown in the builder window
         final Map<BlockPos, Integer> placedTick = new HashMap<>();             // when we last clicked a block into place (server needs a moment to confirm)
+        final Map<BlockPos, int[]> tune = new HashMap<>();                     // note blocks being tuned: {note the server will have after our clicks, tick of last click, lost clicks}
 
         // filler blocks (bridges, stairs, support columns) that we placed ourselves
         final Set<BlockPos> fillers = new HashSet<>();
@@ -250,7 +251,7 @@ public final class BuildModules {
             }
         }
 
-        void unload() { chestMem.clear(); schem = null; loadedFile = ""; needTotal.clear(); layerNeed = new HashMap<>(); rateLog.clear(); view.clear(); done.clear(); nextPos = null; curIdx = -1; ghosts = List.of(); keys = new long[0]; surf.clear(); resetWalk(); removeLite(); fillers.clear(); fillTarget = null; junk.clear(); ours.clear(); gaveUp.clear(); fixTries.clear(); strikes.clear(); clicks.clear(); wrongCount = 0; layerMin = 0; layerCacheTick = -1; removeCacheTick = -1; layerTot = new int[0]; layerDoneN = new int[0]; resetLayerCheck(); status = "Unloaded."; }
+        void unload() { chestMem.clear(); schem = null; loadedFile = ""; needTotal.clear(); layerNeed = new HashMap<>(); rateLog.clear(); view.clear(); done.clear(); nextPos = null; curIdx = -1; ghosts = List.of(); keys = new long[0]; surf.clear(); resetWalk(); removeLite(); fillers.clear(); fillTarget = null; junk.clear(); ours.clear(); gaveUp.clear(); fixTries.clear(); strikes.clear(); clicks.clear(); tune.clear(); wrongCount = 0; layerMin = 0; layerCacheTick = -1; removeCacheTick = -1; layerTot = new int[0]; layerDoneN = new int[0]; resetLayerCheck(); status = "Unloaded."; }
 
         void originHere() {
             if (mc.player == null) return;
@@ -268,7 +269,7 @@ public final class BuildModules {
             } else U.chat("Look at a block first.");
         }
 
-        private void resetProgress() { done.clear(); firstPending = 0; doneCount = 0; curIdx = -1; tick = 0; recPos = -1; ghosts = List.of(); badTargets.clear(); strikes.clear(); clicks.clear(); lastDoneSeen = -1; noPlaceTicks = 0; restockPauseUntil = 0; lastTripDone = -1; fruitlessTrips = 0; shortTick = -9999; junk.clear(); ours.clear(); gaveUp.clear(); fixTries.clear(); wrongCount = 0; layerMin = 0; layerCacheTick = -1; removeCacheTick = -1; lastAct = lastBuiltTick = walkClock; stuckCount = 0; activeTicks = 0; announced = false; rangeSkipped = 0; layerTot = new int[0]; layerDoneN = new int[0]; resetLayerCheck(); resetWalk(); }
+        private void resetProgress() { done.clear(); firstPending = 0; doneCount = 0; curIdx = -1; tick = 0; recPos = -1; ghosts = List.of(); badTargets.clear(); strikes.clear(); clicks.clear(); lastDoneSeen = -1; noPlaceTicks = 0; restockPauseUntil = 0; lastTripDone = -1; fruitlessTrips = 0; shortTick = -9999; junk.clear(); ours.clear(); gaveUp.clear(); fixTries.clear(); tune.clear(); wrongCount = 0; layerMin = 0; layerCacheTick = -1; removeCacheTick = -1; lastAct = lastBuiltTick = walkClock; stuckCount = 0; activeTicks = 0; announced = false; rangeSkipped = 0; layerTot = new int[0]; layerDoneN = new int[0]; resetLayerCheck(); resetWalk(); }
 
         void rebuildView() {
             if (schem == null) return;
@@ -359,6 +360,15 @@ public final class BuildModules {
             if (cur.getBlock() != want.getBlock()) return false;
             if (matchFacing.get() && needFacing(want) != null && cur.contains(Properties.HORIZONTAL_FACING)
                     && cur.get(Properties.HORIZONTAL_FACING) != want.get(Properties.HORIZONTAL_FACING)) return false;
+            // 6-way facing (piston, observer, dropper, hopper, end rod, ...): only for blocks whose direction we can control by where we look / click
+            if (matchFacing.get()) {
+                if (want.contains(Properties.FACING) && cur.contains(Properties.FACING) && (needLook(want) != null || clickFace(want) != null)
+                        && want.get(Properties.FACING) != cur.get(Properties.FACING)) return false;
+                if (want.contains(Properties.HOPPER_FACING) && cur.contains(Properties.HOPPER_FACING)
+                        && want.get(Properties.HOPPER_FACING) != cur.get(Properties.HOPPER_FACING)) return false;
+            }
+            // note blocks: the pitch is part of the state (0..24), it is set by right clicking after the block is placed
+            if (want.contains(Properties.NOTE) && cur.contains(Properties.NOTE) && !want.get(Properties.NOTE).equals(cur.get(Properties.NOTE))) return false;
             if (want.contains(Properties.AXIS) && cur.contains(Properties.AXIS) && want.get(Properties.AXIS) != cur.get(Properties.AXIS)) return false;
             if (want.contains(Properties.BLOCK_HALF) && cur.contains(Properties.BLOCK_HALF) && want.get(Properties.BLOCK_HALF) != cur.get(Properties.BLOCK_HALF)) return false;
             if (want.contains(Properties.SLAB_TYPE) && cur.contains(Properties.SLAB_TYPE)) {
@@ -388,7 +398,7 @@ public final class BuildModules {
 
         /** A block that is not what the schematic wants stands at wp: remember it so it gets broken and placed again (a few tries, then it is accepted). */
         private void noteWrong(BlockPos wp, BlockState want, BlockState cur) {
-            if (!fixWrong.get() || junk.contains(wp) || gaveUp.contains(wp) || cur.isAir() || wantsDouble(want, cur)) return;
+            if (!fixWrong.get() || junk.contains(wp) || gaveUp.contains(wp) || cur.isAir() || wantsDouble(want, cur) || needsTune(want, cur)) return;
             if (!ours.contains(wp) && !fixForeign.get()) return;
             if (cur.getHardness(mc.world, wp) < 0) return;   // bedrock and the like
             Item it = want.getBlock().asItem();
@@ -429,6 +439,44 @@ public final class BuildModules {
         }
 
         /**
+         * Blocks with a 6-way FACING that is taken from the direction the PLAYER LOOKS (pistons, observers, droppers / dispensers, barrels):
+         * they get FACING = opposite of the look direction, so this returns the direction we have to look in (up / down included).
+         */
+        private static Direction needLook(BlockState s) {
+            if (!s.contains(Properties.FACING)) return null;
+            Block b = s.getBlock();
+            if (b instanceof PistonBlock || b instanceof ObserverBlock || b instanceof DispenserBlock || b instanceof BarrelBlock)
+                return s.get(Properties.FACING).getOpposite();
+            return null;
+        }
+
+        /** The axis the look vector points along the most, or null when two axes are too close to call (the server would round either way). */
+        private static Direction dominant(double dx, double dy, double dz) {
+            double ax = Math.abs(dx), ay = Math.abs(dy), az = Math.abs(dz);
+            double mx = Math.max(ax, Math.max(ay, az));
+            double second = ax == mx ? Math.max(ay, az) : ay == mx ? Math.max(ax, az) : Math.max(ax, ay);
+            if (mx < 0.3 || mx - second < 0.15 * mx) return null;
+            if (ax == mx) return dx > 0 ? Direction.EAST : Direction.WEST;
+            if (ay == mx) return dy > 0 ? Direction.UP : Direction.DOWN;
+            return dz > 0 ? Direction.SOUTH : Direction.NORTH;
+        }
+
+        /** Direction the server will think we look in when we click `hit` from `eye` (all six directions). */
+        private static Direction lookFrom3(Vec3d eye, Vec3d hit) {
+            return dominant(hit.x - eye.x, hit.y - eye.y, hit.z - eye.z);
+        }
+
+        /** A note block stands at the right place but is set to another note: it must be right-clicked, not broken. */
+        private static boolean needsTune(BlockState want, BlockState cur) {
+            return want.getBlock() == cur.getBlock() && want.contains(Properties.NOTE) && cur.contains(Properties.NOTE)
+                    && !want.get(Properties.NOTE).equals(cur.get(Properties.NOTE));
+        }
+
+        private static boolean isTune(Plan pl) {
+            return pl.against().equals(pl.pos()) && pl.state().contains(Properties.NOTE);
+        }
+
+        /**
          * Blocks whose state depends on WHICH face is clicked: wall torches / ladders / wall signs / banners / hooks take the clicked side as their
          * facing, standing torches need the top face, levers / buttons / grindstones follow their floor / wall / ceiling attachment.
          * Returns the face of the neighbour that has to be clicked, or null when it does not matter.
@@ -436,6 +484,13 @@ public final class BuildModules {
         private static Direction clickFace(BlockState s) {
             String id = Registries.BLOCK.getId(s.getBlock()).getPath();
             boolean hf = s.contains(Properties.HORIZONTAL_FACING);
+            Block blk = s.getBlock();
+            // hopper: FACING = opposite of the clicked face (a click on the top / bottom gives DOWN)
+            if (blk instanceof HopperBlock && s.contains(Properties.HOPPER_FACING)) return s.get(Properties.HOPPER_FACING).getOpposite();
+            // these point away from the face they are placed on
+            if (s.contains(Properties.FACING) && (blk instanceof EndRodBlock || blk instanceof LightningRodBlock
+                    || blk instanceof AmethystClusterBlock || blk instanceof ShulkerBoxBlock))
+                return s.get(Properties.FACING);
             if (hf && (id.equals("ladder") || id.equals("tripwire_hook") || id.contains("wall_torch") || id.endsWith("wall_sign")
                     || id.endsWith("wall_banner") || id.endsWith("wall_head") || id.endsWith("wall_skull") || id.endsWith("coral_wall_fan")))
                 return s.get(Properties.HORIZONTAL_FACING);
@@ -500,9 +555,11 @@ public final class BuildModules {
                 Integer pt = placedTick.get(wp);
                 if (pt != null && walkClock - pt < 8 && !gaveUp.contains(wp)) return null;
                 if (!done.get(i)) { done.set(i); doneCount++; }
+                if (!tune.isEmpty()) tune.remove(wp);
                 return null;
             }
             if (skipState(want)) { done.set(i); return null; }
+            if (needsTune(want, cur)) return tunePlan(i, wp, want, cur, eye, rr, margin);
             if (wantsDouble(want, cur)) return slabPlan(i, wp, want, cur, eye, rr, margin);
             if (!cur.isReplaceable()) { noteWrong(wp, want, cur); return null; }
             Item item = want.getBlock().asItem();
@@ -511,6 +568,43 @@ public final class BuildModules {
             // never place a solid block into the space we are standing in (the server refuses it and the block "ghosts")
             if (margin == 0 && !want.getCollisionShape(mc.world, wp).isEmpty() && mc.player.getBoundingBox().intersects(new Box(wp))) return null;
             return faces(i, wp, want, item, eye, ignoreFacing, rr);
+        }
+
+        /**
+         * A note block with the wrong note: every right click raises it by one (24 -> 0), so click it (want - now) times. The client does not predict
+         * the new note, so we count the clicks we sent ourselves and only trust the world again once nothing has been in flight for a while.
+         */
+        private Plan tunePlan(int i, BlockPos wp, BlockState want, BlockState cur, Vec3d eye, double rr, double margin) {
+            BlockPos key = wp.toImmutable();
+            int curNote = cur.get(Properties.NOTE), wantNote = want.get(Properties.NOTE);
+            int[] t = tune.computeIfAbsent(key, k -> new int[]{curNote, -1000, 0});
+            if (walkClock - t[1] >= 30) {            // nothing in flight any more: believe the world
+                if (t[1] > 0 && curNote != t[0]) t[2]++;   // some clicks got lost
+                t[0] = curNote;
+                if (t[2] > 4) { gaveUp.add(key); tune.remove(key); return null; }
+            }
+            if (Math.floorMod(wantNote - t[0], 25) == 0) return null;   // all clicks sent, waiting for the server
+            // sneaking with something in the hand would place that item next to the note block instead of tuning it
+            if (margin == 0 && mc.player.isSneaking() && !mc.player.getMainHandStack().isEmpty()) return null;
+            Item hand = mc.player.getMainHandStack().getItem();
+            String handId = Registries.ITEM.getId(hand).getPath();
+            boolean headItem = handId.endsWith("_head") || handId.endsWith("_skull");
+            Plan best = null; double bd = Double.MAX_VALUE;
+            for (Direction face : Direction.values()) {
+                if (face == Direction.UP && headItem) continue;   // a head clicked onto the top of a note block is placed, not a tuning click
+                Vec3d hit = Vec3d.ofCenter(wp).add(face.getOffsetX() * 0.5, face.getOffsetY() * 0.5, face.getOffsetZ() * 0.5);
+                Vec3d fv = new Vec3d(face.getOffsetX(), face.getOffsetY(), face.getOffsetZ());
+                if (eye.subtract(hit).dotProduct(fv) <= 0) continue;
+                double dd = eye.distanceTo(hit);
+                if (dd > rr) continue;
+                if (ray.get()) {
+                    BlockHitResult rh = mc.world.raycast(new RaycastContext(eye, hit, RaycastContext.ShapeType.COLLIDER,
+                            RaycastContext.FluidHandling.NONE, mc.player));
+                    if (rh.getType() == HitResult.Type.BLOCK && !rh.getBlockPos().equals(wp)) continue;
+                }
+                if (dd < bd) { bd = dd; best = new Plan(i, wp, wp, face, hit, hand, want); }
+            }
+            return best;
         }
 
         /** Second half of a double slab: click the free side of the half that is already there (against == the slab's own position). */
@@ -543,6 +637,7 @@ public final class BuildModules {
         /** Finds the face to click (and where) so that `want` ends up at wp. i = schematic entry or -1 for filler blocks. */
         private Plan faces(int i, BlockPos wp, BlockState want, Item item, Vec3d eye, boolean ignoreFacing, double rr) {
             Direction need = needFacing(want);
+            Direction look = matchFacing.get() ? needLook(want) : null;
             Direction onlyFace = clickFace(want);
             Direction.Axis axis = want.contains(Properties.AXIS) ? want.get(Properties.AXIS) : null;
 
@@ -560,6 +655,7 @@ public final class BuildModules {
                 double yOff = face.getAxis().isHorizontal() ? (top(want) ? 0.25 : bottom(want) ? -0.25 : 0) : 0;
                 Vec3d hit = Vec3d.ofCenter(n).add(face.getOffsetX() * 0.5, face.getOffsetY() * 0.5 + yOff, face.getOffsetZ() * 0.5);
                 if (!ignoreFacing && matchFacing.get() && need != null && facingFrom(eye, hit) != need) continue;
+                if (!ignoreFacing && look != null && lookFrom3(eye, hit) != look) continue;
                 Vec3d fv = new Vec3d(face.getOffsetX(), face.getOffsetY(), face.getOffsetZ());
                 if (eye.subtract(hit).dotProduct(fv) <= 0) continue;
                 double dd = eye.distanceTo(hit);
@@ -2073,7 +2169,7 @@ public final class BuildModules {
                     break;
                 }
                 failCount = 0; noPlaceTicks = 0; aimWait = 0;
-                if (tooManyClicks(plan.idx())) { park(plan.idx(), 200); curIdx = -1; }   // clicked again and again but the block never stays: server refuses it
+                if (!isTune(plan) && tooManyClicks(plan.idx())) { park(plan.idx(), 200); curIdx = -1; }   // clicked again and again but the block never stays: server refuses it
                 placed.add(plan.pos());
                 cd = delay.getInt() + (humanize.get() && delay.getInt() > 0 ? (int) Math.round(U.rand(0, 1.5)) : 0);
             }
@@ -2117,6 +2213,13 @@ public final class BuildModules {
                     // blocks with a facing take it from the SERVER's idea of our rotation, which is still the old one: wait until it is (almost) there
                     if (Math.abs(MathHelper.wrapDegrees(r[0] - yaw0)) > 3f || Math.abs(r[1] - pitch0) > 3f) return false;
                 }
+                // pistons / observers / droppers / barrels: FACING comes from the 3D look direction as the SERVER knows it (the rotation sent last tick),
+                // so both that one and the new aim must clearly point the right way (up / down included)
+                Direction look = matchFacing.get() ? needLook(pl.state()) : null;
+                if (look != null) {
+                    Vec3d old = Vec3d.fromPolar(pitch0, yaw0), now = p.getRotationVec(1.0F);
+                    if (dominant(old.x, old.y, old.z) != look || dominant(now.x, now.y, now.z) != look) return false;
+                }
                 // slabs / stairs / trapdoors on a side face: the half depends on where on the face we click
                 if (face.getAxis().isHorizontal()) {
                     double fy = hit.y - pl.against().getY();
@@ -2126,7 +2229,12 @@ public final class BuildModules {
             }
             mc.interactionManager.interactBlock(p, Hand.MAIN_HAND, new BlockHitResult(hit, face, pl.against(), false));
             p.swingHand(Hand.MAIN_HAND);
-            ours.add(pl.pos().toImmutable());
+            if (isTune(pl)) {
+                int[] t = tune.get(pl.pos().toImmutable());
+                if (t != null) { t[0] = (t[0] + 1) % 25; t[1] = walkClock; }
+            } else {
+                ours.add(pl.pos().toImmutable());
+            }
             placedTick.put(pl.pos().toImmutable(), walkClock);
             lastAct = walkClock; stuckCount = 0;
             return true;

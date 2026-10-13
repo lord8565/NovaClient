@@ -4,7 +4,7 @@ Fabric, Minecraft 1.21.11. Open the GUI with **Right Shift**.
 
 ## Build
 1. https://fabricmc.net/develop -> 1.21.11, copy exact versions into `gradle.properties`.
-2. JDK 21, `gradle build` (needs Gradle 9.x; or `./gradlew build` if you have the wrapper). After building, check the jar is not empty: `unzip -l build/libs/nova-client-2.8.5.jar` must list `fabric.mod.json` and `nova/*.class`. Jar: `build/libs/nova-client-2.8.5.jar` (not `-sources`). Put it in `mods/` with Fabric API.
+2. JDK 21, `gradle build` (needs Gradle 9.x; or `./gradlew build` if you have the wrapper). After building, check the jar is not empty: `unzip -l build/libs/nova-client-2.8.6.jar` must list `fabric.mod.json` and `nova/*.class`. Jar: `build/libs/nova-client-2.8.6.jar` (not `-sources`). Put it in `mods/` with Fabric API.
 
 ## GUI
 Icon tabs on the left, module cards in two columns. Left click = toggle, right click = fold out settings,
@@ -28,6 +28,13 @@ It turns smoothly to each face (Aim speed / Max turn), only clicks when the cros
   - *Settings*: all Schematic settings in foldable groups (Placement, Position, Restock, Walking & filler, Fixing, Display). Anything not in a group lands under "Other", so nothing is hidden.
   - A status pill in the header shows NO FILE / NO ORIGIN / READY / BUILDING / DONE, and the footer tells you the next step. "< Modules" goes back to the normal menu.
 - Builder logic is unchanged apart from a small speed tracker (blocks finished per minute) and read-only accessors for the window.
+
+## Changes in 2.8.6
+- **Fixed: wrong block states in the schematic builder.**
+  - Note blocks: the note is now part of the state check. A note block with the wrong note is tuned by right-clicking it (want - current) mod 25 times instead of being broken and re-placed. Clicks are counted by the builder (the client does not predict the new note); lost clicks fall back to the real value, and after 4 lost-click rounds the block is given up. Tuning is skipped while sneaking with an item in hand.
+  - Pistons, observers, droppers/dispensers, barrels: 6-way facing (up/down included) is compared when checking a block, and the look direction must clearly point the right way (near-ties rejected), both for the rotation the server knows and the new aim, before clicking.
+  - Hoppers, end rods, lightning rods, amethyst clusters, shulker boxes: facing is taken from the clicked face, so a neighbour on the right face is required.
+- Source only: edited without the game libraries, run `./gradlew build` and check the log before using it. Mapping names (Properties.NOTE, HOPPER_FACING, LightningRodBlock, ...) were not compiled against 1.21.11.
 
 ## Changes in 2.8.5
 - **Fixed: the builder sometimes skipped blocks within a layer.** Three causes:
