@@ -178,6 +178,13 @@ public final class BuildModules {
         int restockPauseUntil, lastTripDone = -1, fruitlessTrips, shortTick = -9999;
         boolean shortCache;
 
+        // layer verification: reads the REAL world instead of trusting the done flags (a block the client predicted but the server refused stays flagged done)
+        int gateY = Integer.MIN_VALUE;                       // layer we were building last: leaving it upwards needs a clean world check
+        int stuckLayerY = Integer.MIN_VALUE, stuckLayerHits; // a stuck layer gets one real retry before it may be skipped
+        int finalY = -1;                                     // final check before "finished": next layer to verify
+        int chkY = Integer.MIN_VALUE, chkTotal, chkMissing, chkTick = -9999;   // result of the last check, shown in the builder window
+        final Map<BlockPos, Integer> placedTick = new HashMap<>();             // when we last clicked a block into place (server needs a moment to confirm)
+
         // filler blocks (bridges, stairs, support columns) that we placed ourselves
         final Set<BlockPos> fillers = new HashSet<>();
         BlockPos fillTarget;
@@ -243,7 +250,7 @@ public final class BuildModules {
             }
         }
 
-        void unload() { chestMem.clear(); schem = null; loadedFile = ""; needTotal.clear(); layerNeed = new HashMap<>(); rateLog.clear(); view.clear(); done.clear(); nextPos = null; curIdx = -1; ghosts = List.of(); keys = new long[0]; surf.clear(); resetWalk(); removeLite(); fillers.clear(); fillTarget = null; junk.clear(); ours.clear(); gaveUp.clear(); fixTries.clear(); strikes.clear(); clicks.clear(); wrongCount = 0; layerMin = 0; layerCacheTick = -1; removeCacheTick = -1; layerTot = new int[0]; layerDoneN = new int[0]; status = "Unloaded."; }
+        void unload() { chestMem.clear(); schem = null; loadedFile = ""; needTotal.clear(); layerNeed = new HashMap<>(); rateLog.clear(); view.clear(); done.clear(); nextPos = null; curIdx = -1; ghosts = List.of(); keys = new long[0]; surf.clear(); resetWalk(); removeLite(); fillers.clear(); fillTarget = null; junk.clear(); ours.clear(); gaveUp.clear(); fixTries.clear(); strikes.clear(); clicks.clear(); wrongCount = 0; layerMin = 0; layerCacheTick = -1; removeCacheTick = -1; layerTot = new int[0]; layerDoneN = new int[0]; resetLayerCheck(); status = "Unloaded."; }
 
         void originHere() {
             if (mc.player == null) return;
@@ -261,7 +268,7 @@ public final class BuildModules {
             } else U.chat("Look at a block first.");
         }
 
-        private void resetProgress() { done.clear(); firstPending = 0; doneCount = 0; curIdx = -1; tick = 0; recPos = -1; ghosts = List.of(); badTargets.clear(); strikes.clear(); clicks.clear(); lastDoneSeen = -1; noPlaceTicks = 0; restockPauseUntil = 0; lastTripDone = -1; fruitlessTrips = 0; shortTick = -9999; junk.clear(); ours.clear(); gaveUp.clear(); fixTries.clear(); wrongCount = 0; layerMin = 0; layerCacheTick = -1; removeCacheTick = -1; lastAct = lastBuiltTick = walkClock; stuckCount = 0; activeTicks = 0; announced = false; rangeSkipped = 0; layerTot = new int[0]; layerDoneN = new int[0]; resetWalk(); }
+        private void resetProgress() { done.clear(); firstPending = 0; doneCount = 0; curIdx = -1; tick = 0; recPos = -1; ghosts = List.of(); badTargets.clear(); strikes.clear(); clicks.clear(); lastDoneSeen = -1; noPlaceTicks = 0; restockPauseUntil = 0; lastTripDone = -1; fruitlessTrips = 0; shortTick = -9999; junk.clear(); ours.clear(); gaveUp.clear(); fixTries.clear(); wrongCount = 0; layerMin = 0; layerCacheTick = -1; removeCacheTick = -1; lastAct = lastBuiltTick = walkClock; stuckCount = 0; activeTicks = 0; announced = false; rangeSkipped = 0; layerTot = new int[0]; layerDoneN = new int[0]; resetLayerCheck(); resetWalk(); }
 
         void rebuildView() {
             if (schem == null) return;
@@ -488,7 +495,13 @@ public final class BuildModules {
             if (Vec3d.ofCenter(wp).squaredDistanceTo(eye) > (rr + 1.0) * (rr + 1.0)) return null;
             if (outOfRange(e.y())) return null;
             BlockState want = e.state(), cur = mc.world.getBlockState(wp);
-            if (sameState(want, cur) || gaveUp.contains(wp)) { if (!done.get(i)) { done.set(i); doneCount++; } return null; }
+            if (sameState(want, cur) || gaveUp.contains(wp)) {
+                // the client shows a placed block immediately, before the server agreed: do not flag it done until a few ticks have passed
+                Integer pt = placedTick.get(wp);
+                if (pt != null && walkClock - pt < 8 && !gaveUp.contains(wp)) return null;
+                if (!done.get(i)) { done.set(i); doneCount++; }
+                return null;
+            }
             if (skipState(want)) { done.set(i); return null; }
             if (wantsDouble(want, cur)) return slabPlan(i, wp, want, cur, eye, rr, margin);
             if (!cur.isReplaceable()) { noteWrong(wp, want, cur); return null; }
@@ -1857,10 +1870,8 @@ public final class BuildModules {
         // ------------------------------------------------------------------ layer by layer / unstick
         private boolean layerOn() { return buildMode.is("Layer by layer"); }
 
-        /** Layer (schematic y) that is being built in "Layer by layer" mode: the lowest one that still has something to do. MIN_VALUE when everything is done. */
-        private int layerY() {
-            if (layerCacheTick == walkClock) return layerCache;
-            layerCacheTick = walkClock;
+        /** Lowest layer (schematic y) that still has a block not flagged done, honouring layerMin. MIN_VALUE when none. */
+        private int lowestOpenLayer() {
             int res = Integer.MIN_VALUE;
             for (int pass = 0; pass < 2; pass++) {
                 while (firstPending < view.size() && done.get(firstPending)) firstPending++;
@@ -1869,8 +1880,71 @@ public final class BuildModules {
                 if (res != Integer.MIN_VALUE || layerMin == 0) break;
                 layerMin = 0;   // everything above the skipped layers is finished: go back to the skipped ones
             }
+            return res;
+        }
+
+        /** Layer (schematic y) that is being built in "Layer by layer" mode: the lowest one that still has something to do. MIN_VALUE when everything is done. */
+        private int layerY() {
+            if (layerCacheTick == walkClock) return layerCache;
+            layerCacheTick = walkClock;
+            int res = lowestOpenLayer();
+            // About to leave a layer (or finish): look at the real world first. If blocks of it are missing, flag them again and stay on it.
+            // (Not when the layer was skipped on purpose, layerMin > gateY.)
+            if (gateY != Integer.MIN_VALUE && (res == Integer.MIN_VALUE || res > gateY) && layerMin <= gateY && verifyLayer(gateY) > 0) res = lowestOpenLayer();
+            layerCacheTick = walkClock;
+            if (res != Integer.MIN_VALUE) {
+                if (res != gateY) { stuckLayerY = Integer.MIN_VALUE; stuckLayerHits = 0; }
+                gateY = res;
+            }
             layerCache = res;
             return res;
+        }
+
+        /**
+         * Compares one layer with the real world (not with the done flags). Blocks that are wrong / missing lose their done flag so they get built
+         * again, blocks that are right get it. Returns how many blocks of the layer are still missing. Also stores the result for the builder window.
+         */
+        private int verifyLayer(int y) {
+            if (mc.world == null || base() == null || y < 0 || y >= vy || outOfRange(y)) return 0;
+            int lo = lowerBound(y), hi = lowerBound(y + 1), missing = 0;
+            boolean changed = false;
+            for (int i = lo; i < hi; i++) {
+                Litematic.Entry e = view.get(i);
+                BlockPos wp = world(e);
+                BlockState cur = mc.world.getBlockState(wp);
+                boolean ok = sameState(e.state(), cur) || skipState(e.state()) || gaveUp.contains(wp) || e.state().getBlock().asItem() == Items.AIR;
+                if (ok) {
+                    Integer pt = placedTick.get(wp);
+                    if (pt != null && walkClock - pt < 8) { missing++; continue; }   // placed a moment ago, the server has not confirmed yet
+                    if (!done.get(i)) { done.set(i); doneCount++; changed = true; }
+                } else {
+                    missing++;
+                    if (done.get(i)) { done.clear(i); if (doneCount > 0) doneCount--; if (i < firstPending) firstPending = i; changed = true; }
+                }
+            }
+            if (changed) { layerCacheTick = -1; if (missing > 0) curIdx = -1; }
+            chkY = y; chkTotal = hi - lo; chkMissing = missing; chkTick = walkClock;
+            return missing;
+        }
+
+        /** Layer being worked on right now (schematic y): the layer-by-layer layer, or the lowest layer with an open block. MIN_VALUE when none. */
+        private int buildY() {
+            if (layerOn()) return layerY();
+            while (firstPending < view.size() && done.get(firstPending)) firstPending++;
+            return firstPending < view.size() ? view.get(firstPending).y() : Integer.MIN_VALUE;
+        }
+
+        /** Twice a second: check the layer being built and the one below it against the world, so a refused block is noticed right away. */
+        private void checkLayer() {
+            int y = buildY();
+            if (y == Integer.MIN_VALUE) return;
+            if (y > 0) verifyLayer(y - 1);
+            verifyLayer(y);   // last, so the window shows the layer being built
+        }
+
+        private void resetLayerCheck() {
+            gateY = Integer.MIN_VALUE; stuckLayerY = Integer.MIN_VALUE; stuckLayerHits = 0; finalY = -1;
+            chkY = Integer.MIN_VALUE; chkTotal = 0; chkMissing = 0; chkTick = -9999; placedTick.clear();
         }
 
         /** Nothing happened for a while: forget parked blocks / emptied chests, and in layer mode move on from a layer that cannot be finished right now. */
@@ -1883,8 +1957,17 @@ public final class BuildModules {
             if (layerOn()) {
                 int ly = layerY();
                 if (ly != Integer.MIN_VALUE && ly + 1 < vy) {
+                    // the parked blocks were just forgotten above: give them a real retry first, only skip the layer when it is stuck again
+                    if (stuckLayerY == ly) stuckLayerHits++; else { stuckLayerY = ly; stuckLayerHits = 1; }
+                    layerCacheTick = -1;
+                    if (stuckLayerHits < 2) {
+                        if (stuckCount <= 3) U.chat("Schematic: layer " + (ly + 1) + " is stuck (" + why + "), retrying its blocks.");
+                        return;
+                    }
+                    int left = verifyLayer(ly);
+                    stuckLayerHits = 0;
                     layerMin = ly + 1; layerCacheTick = -1;
-                    if (stuckCount <= 3) U.chat("Schematic: layer " + (ly + 1) + " is stuck (" + why + "), skipping it for now.");
+                    if (stuckCount <= 3) U.chat("Schematic: layer " + (ly + 1) + " is still stuck (" + why + "), " + left + " block(s) left in it. Skipping it for now, it is built later.");
                     return;
                 }
             }
@@ -1919,8 +2002,17 @@ public final class BuildModules {
             if (showSchem.get()) { if (ghostTick++ % 8 == 0) updateGhosts(); } else if (!ghosts.isEmpty()) ghosts = List.of();
             if (liteTick++ % 10 == 0) syncLitematica();
             if (recPos >= 0 || tick++ % 40 == 0) recount();
-            if (allDone()) {
-                if (!announced && activeTicks > 100) {
+            if (walkClock % 10 == 0) checkLayer();
+            if (walkClock % 200 == 0) placedTick.values().removeIf(t -> walkClock - t > 60);
+            boolean all = allDone();
+            if (all) {   // everything flagged done: verify every layer against the world (one per tick) before saying so
+                int lastY = lastLayer() - 1;
+                if (finalY < 0) finalY = firstLayer() - 1;
+                if (finalY <= lastY) verifyLayer(finalY++);
+                all = allDone();
+            } else finalY = -1;
+            if (all) {
+                if (finalY > lastLayer() - 1 && !announced && activeTicks > 100) {
                     announced = true;
                     int secs = activeTicks / 20;
                     U.chat("Schematic finished: " + schem.name + " (" + (view.size() - rangeSkipped) + " blocks) in " + (secs / 60) + ":" + String.format("%02d", secs % 60) + ".");
@@ -2035,6 +2127,7 @@ public final class BuildModules {
             mc.interactionManager.interactBlock(p, Hand.MAIN_HAND, new BlockHitResult(hit, face, pl.against(), false));
             p.swingHand(Hand.MAIN_HAND);
             ours.add(pl.pos().toImmutable());
+            placedTick.put(pl.pos().toImmutable(), walkClock);
             lastAct = walkClock; stuckCount = 0;
             return true;
         }
@@ -2064,7 +2157,13 @@ public final class BuildModules {
         public String walkLine() { return walkStatus; }
         public String errorLine() { return lastErr; }
         public int markedChests() { return markedCount(); }
-        public boolean finished() { return allDone(); }
+        public boolean finished() { return allDone() && finalY > lastLayer() - 1; }
+        /** Result of the last real-world check of a layer: layer (1-based, -1 = none yet), its blocks, and how many of them are still missing. */
+        public int checkedLayer() { return chkY == Integer.MIN_VALUE ? -1 : chkY + 1; }
+        public int checkedTotal() { return chkTotal; }
+        public int checkedMissing() { return chkMissing; }
+        /** True while the final check of all layers runs (everything flagged done, each layer is compared with the world). */
+        public boolean finalChecking() { return schem != null && allDone() && finalY <= lastLayer() - 1; }
         /** 1-based layer being built in "Layer by layer" mode, -1 otherwise. */
         public int currentLayer() {
             if (schem == null || origin == null || !layerOn()) return -1;
@@ -2097,6 +2196,7 @@ public final class BuildModules {
         private void layersChanged() {
             recPos = -1; tick = 0; layerMin = 0; layerCacheTick = -1; shortTick = -9999; missingTick = -9999;
             curIdx = -1; nextPos = null; ghosts = List.of(); badTargets.clear(); strikes.clear(); clicks.clear(); noPlaceTicks = 0; lastAct = walkClock; stuckCount = 0;
+            resetLayerCheck();
             resetWalk();
         }
         public double blocksPerMinute() {

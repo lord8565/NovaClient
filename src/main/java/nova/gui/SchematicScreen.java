@@ -419,7 +419,7 @@ public class SchematicScreen extends Screen {
     }
 
     private int drawOverview(DrawContext ctx, int x, int y, int w, int acc) {
-        int h = 108;
+        int h = mod.isLoaded() ? 119 : 108;
         int yy = card(ctx, x, y, w, h, "Overview", acc);
         int tx = x + 9, iw = w - 18;
         if (!mod.isLoaded()) {
@@ -463,6 +463,17 @@ public class SchematicScreen extends Screen {
         U.text(ctx, fit(sp, iw - (lt.isEmpty() ? 0 : U.width(lt) + 8)), tx, yy, A(DIM));
         if (!lt.isEmpty()) U.text(ctx, lt, tx + iw - U.width(lt), yy, A(mod.layerLimited() ? acc : DIM));
         yy += 11;
+        // layer check: the builder compares the layer with the real world (not with its own bookkeeping) before it moves on
+        {
+            int cl = mod.checkedLayer(), ct = mod.checkedTotal(), cm = mod.checkedMissing();
+            String ck; int cc = DIM;
+            if (mod.finalChecking()) { ck = "Final check: layer " + Math.max(1, cl) + " / " + sz[1] + " ..."; cc = AMBER; }
+            else if (cl < 0 || ct <= 0) ck = "Layer check: waiting";
+            else if (cm == 0) { ck = "Layer " + cl + " complete  " + ct + " / " + ct + " verified"; cc = GREEN; }
+            else { ck = "Layer " + cl + ": " + (ct - cm) + " / " + ct + "  " + cm + " missing"; cc = AMBER; }
+            U.text(ctx, fit(ck, iw), tx, yy, A(cc));
+            yy += 11;
+        }
         String line; int lc = DIM;
         if (!mod.errorLine().isEmpty()) { line = "Error: " + mod.errorLine(); lc = RED; }
         else if (mod.finished()) { line = "Everything is built."; lc = GREEN; }

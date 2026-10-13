@@ -4,7 +4,7 @@ Fabric, Minecraft 1.21.11. Open the GUI with **Right Shift**.
 
 ## Build
 1. https://fabricmc.net/develop -> 1.21.11, copy exact versions into `gradle.properties`.
-2. JDK 21, `gradle build` (needs Gradle 9.x; or `./gradlew build` if you have the wrapper). After building, check the jar is not empty: `unzip -l build/libs/nova-client-2.8.4.jar` must list `fabric.mod.json` and `nova/*.class`. Jar: `build/libs/nova-client-2.8.4.jar` (not `-sources`). Put it in `mods/` with Fabric API.
+2. JDK 21, `gradle build` (needs Gradle 9.x; or `./gradlew build` if you have the wrapper). After building, check the jar is not empty: `unzip -l build/libs/nova-client-2.8.5.jar` must list `fabric.mod.json` and `nova/*.class`. Jar: `build/libs/nova-client-2.8.5.jar` (not `-sources`). Put it in `mods/` with Fabric API.
 
 ## GUI
 Icon tabs on the left, module cards in two columns. Left click = toggle, right click = fold out settings,
@@ -28,6 +28,14 @@ It turns smoothly to each face (Aim speed / Max turn), only clicks when the cros
   - *Settings*: all Schematic settings in foldable groups (Placement, Position, Restock, Walking & filler, Fixing, Display). Anything not in a group lands under "Other", so nothing is hidden.
   - A status pill in the header shows NO FILE / NO ORIGIN / READY / BUILDING / DONE, and the footer tells you the next step. "< Modules" goes back to the normal menu.
 - Builder logic is unchanged apart from a small speed tracker (blocks finished per minute) and read-only accessors for the window.
+
+## Changes in 2.8.5
+- **Fixed: the builder sometimes skipped blocks within a layer.** Three causes:
+  - A block was flagged done as soon as the client showed it, before the server confirmed it. If the server refused it, the block reverted but stayed flagged. Placed blocks now wait ~8 ticks for confirmation, and the layer being built (and the one below) is compared with the real world twice a second; wrong or missing blocks are flagged again and rebuilt.
+  - In *Layer by layer* mode, a stuck layer was skipped right after its parked blocks were un-parked, so they were never retried. A stuck layer now gets one real retry first; only a second stuck round skips it (the chat message says how many blocks are left).
+  - Nothing checked a layer before leaving it. The builder now verifies the layer against the world before moving up, and verifies every layer once more before it reports "finished" (also before *Disable when finished* acts).
+- **Builder window: layer check line** in the Overview card: `Layer 12 complete  340 / 340 verified`, `Layer 12: 337 / 340  3 missing`, or `Final check: layer N / total ...`. "Everything is built." only shows after the final check passes.
+- Source only: edited without the game libraries, run `gradle build` and check the log before using it.
 
 ## Changes in 2.8.4
 - **Choose which layer to build, in the builder window.** Build tab > new *Layers* card: *All*, *One layer* or *Range*.
