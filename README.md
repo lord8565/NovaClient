@@ -4,7 +4,7 @@ Fabric, Minecraft 1.21.11. Open the GUI with **Right Shift**.
 
 ## Build
 1. https://fabricmc.net/develop -> 1.21.11, copy exact versions into `gradle.properties`.
-2. JDK 21, `gradle build` (needs Gradle 9.x; or `./gradlew build` if you have the wrapper). After building, check the jar is not empty: `unzip -l build/libs/nova-client-2.8.6.jar` must list `fabric.mod.json` and `nova/*.class`. Jar: `build/libs/nova-client-2.8.6.jar` (not `-sources`). Put it in `mods/` with Fabric API.
+2. JDK 21, `gradle build` (needs Gradle 9.x; or `./gradlew build` if you have the wrapper). After building, check the jar is not empty: `unzip -l build/libs/nova-client-2.8.7.jar` must list `fabric.mod.json` and `nova/*.class`. Jar: `build/libs/nova-client-2.8.7.jar` (not `-sources`). Put it in `mods/` with Fabric API.
 
 ## GUI
 Icon tabs on the left, module cards in two columns. Left click = toggle, right click = fold out settings,
@@ -28,6 +28,13 @@ It turns smoothly to each face (Aim speed / Max turn), only clicks when the cros
   - *Settings*: all Schematic settings in foldable groups (Placement, Position, Restock, Walking & filler, Fixing, Display). Anything not in a group lands under "Other", so nothing is hidden.
   - A status pill in the header shows NO FILE / NO ORIGIN / READY / BUILDING / DONE, and the footer tells you the next step. "< Modules" goes back to the normal menu.
 - Builder logic is unchanged apart from a small speed tracker (blocks finished per minute) and read-only accessors for the window.
+
+## Changes in 2.8.7
+- **Litematica layers (new setting, Display group).** Three options, kept in sync with the builder's layer limit:
+  - *All layers*: Litematica renders everything.
+  - *One layer*: only one layer is rendered: the one being built in Layer by layer mode, otherwise *First layer*.
+  - *Layer range* (default): *First layer* to *Last layer* (a single layer when both are equal). With no limit set, Litematica is left as you had it.
+  Unloading, disabling the module, or opening the range again gives Litematica back the render mode it had before. Uses reflection; if your Litematica version has other method names it prints one chat message and leaves Litematica alone.
 
 ## Changes in 2.8.6
 - **Fixed: wrong block states in the schematic builder.**

@@ -45,7 +45,7 @@ public class SchematicScreen extends Screen {
         {"Restock", "Take items from chests", "Restock from", "Chest range", "Stacks per item", "Free slots to keep", "Copy material list", "Restock current layer only", "Restock filler too", "Mark / unmark chest I look at", "Mark chests near me", "Clear marked chests", "Show marked chests"},
         {"Walking & filler", "Auto walk", "Sneak at edges", "Show path", "Filler blocks", "Filler block", "Remove filler as I build", "Remove filler when done", "Auto unstick", "Unstick after (s)"},
         {"Fixing", "Fix wrong blocks", "Replace other wrong blocks"},
-        {"Display", "Load into Litematica", "Built-in preview", "Show outline", "Show next block", "Progress HUD", "Preview range", "Preview blocks"},
+        {"Display", "Load into Litematica", "Litematica layers", "Built-in preview", "Show outline", "Show next block", "Progress HUD", "Preview range", "Preview blocks"},
     };
     private static final Set<String> BUILD_TAB = Set.of("Open builder window", "File", "Refresh file list", "Load selected file", "Origin: my position", "Origin: block I look at", "Unload");
     private static final String[] TAB_NAMES = {"Build", "Materials", "Settings"};

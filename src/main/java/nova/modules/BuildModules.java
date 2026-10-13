@@ -80,6 +80,7 @@ public final class BuildModules {
         Setting.Bool layerOnly = bool("Restock current layer only", true);
         Setting.Num keepFree = num("Free slots to keep", 0, 0, 8, 1);
         Setting.Num fromLayer = num("First layer", 1, 1, 400, 1), toLayer = num("Last layer (0 = all)", 0, 0, 400, 1);
+        Setting.Mode liteLayers = mode("Litematica layers", "Layer range", "All layers", "One layer", "Layer range");
         Setting.Num pauseHp = num("Pause below health (0 = off)", 0, 0, 19, 1);
         Setting.Bool stopWhenDone = bool("Disable when finished", false);
         Setting.Action copyList = action("Copy material list", this::copyMaterials);
@@ -136,6 +137,7 @@ public final class BuildModules {
         // Litematica bridge
         Object litePlacement;
         String liteKey = "", liteFailKey = "";
+        Object liteLayerPrevMode; boolean liteLayerSet, liteLayerWarned; String liteLayerKey = "";   // Litematica render layer we changed (and the mode to give back)
         boolean liteWarned;
         int liteTick;
         Object liteWorld;
@@ -251,7 +253,7 @@ public final class BuildModules {
             }
         }
 
-        void unload() { chestMem.clear(); schem = null; loadedFile = ""; needTotal.clear(); layerNeed = new HashMap<>(); rateLog.clear(); view.clear(); done.clear(); nextPos = null; curIdx = -1; ghosts = List.of(); keys = new long[0]; surf.clear(); resetWalk(); removeLite(); fillers.clear(); fillTarget = null; junk.clear(); ours.clear(); gaveUp.clear(); fixTries.clear(); strikes.clear(); clicks.clear(); tune.clear(); wrongCount = 0; layerMin = 0; layerCacheTick = -1; removeCacheTick = -1; layerTot = new int[0]; layerDoneN = new int[0]; resetLayerCheck(); status = "Unloaded."; }
+        void unload() { chestMem.clear(); schem = null; loadedFile = ""; needTotal.clear(); layerNeed = new HashMap<>(); rateLog.clear(); view.clear(); done.clear(); nextPos = null; curIdx = -1; ghosts = List.of(); keys = new long[0]; surf.clear(); resetWalk(); removeLite(); restoreLiteLayer(); fillers.clear(); fillTarget = null; junk.clear(); ours.clear(); gaveUp.clear(); fixTries.clear(); strikes.clear(); clicks.clear(); tune.clear(); wrongCount = 0; layerMin = 0; layerCacheTick = -1; removeCacheTick = -1; layerTot = new int[0]; layerDoneN = new int[0]; resetLayerCheck(); status = "Unloaded."; }
 
         void originHere() {
             if (mc.player == null) return;
@@ -332,7 +334,7 @@ public final class BuildModules {
         private BlockPos world(Litematic.Entry e) { return base().add(e.x(), e.y(), e.z()); }
 
         @Override public void onEnable() { lastAct = lastBuiltTick = walkClock; lastDoneSeen = -1; refresh(false); if (schem == null && !file.is("None")) loadSelected(); }
-        @Override public void onDisable() { nextPos = null; curIdx = -1; ghosts = List.of(); resetWalk(); }
+        @Override public void onDisable() { nextPos = null; curIdx = -1; ghosts = List.of(); resetWalk(); restoreLiteLayer(); }
 
         private int findSlot(Item it) {
             var inv = mc.player.getInventory();
@@ -1063,6 +1065,74 @@ public final class BuildModules {
             return Class.forName("fi.dy.masa.litematica.data.DataManager").getMethod("getSchematicPlacementManager").invoke(null);
         }
 
+        /**
+         * Keeps Litematica's render layers in sync with the builder ("Litematica layers" setting):
+         *   All layers  - Litematica renders everything.
+         *   One layer   - only one layer: the one being built in Layer by layer mode, else First layer.
+         *   Layer range - First layer .. Last layer (a single layer when both are equal); with no limit set Litematica is left as the user had it.
+         * Done by reflection (no compile dependency); on other method names it says so once and leaves Litematica alone.
+         */
+        private void syncLiteLayer(int baseY) {
+            try {
+                String m = liteLayers.value;
+                int lo = firstLayer(), hi = lastLayer();
+                String want;   // ALL | SINGLE | RANGE
+                if (m.equals("All layers")) want = "ALL";
+                else if (m.equals("One layer")) {
+                    int ly = layerOn() ? layerY() : Integer.MIN_VALUE;
+                    lo = hi = ly != Integer.MIN_VALUE ? ly + 1 : lo;
+                    want = "SINGLE";
+                } else if (!layerLimited()) { restoreLiteLayer(); return; }
+                else want = lo == hi ? "SINGLE" : "RANGE";
+                String key = want + "|" + lo + "|" + hi + "|" + baseY;
+                if (key.equals(liteLayerKey)) return;
+                Object range = Class.forName("fi.dy.masa.litematica.data.DataManager").getMethod("getRenderLayerRange").invoke(null);
+                Class<?> rc = range.getClass();
+                var getMode = method(rc, "getLayerMode", 0);
+                var setMode = method(rc, "setLayerMode", 1);
+                if (getMode == null || setMode == null) throw new IllegalStateException("unsupported Litematica version");
+                String enumName = want.equals("ALL") ? "ALL" : want.equals("SINGLE") ? "SINGLE_LAYER" : "LAYER_RANGE";
+                Object mode = null;
+                for (Object e : setMode.getParameterTypes()[0].getEnumConstants()) if (((Enum<?>) e).name().equals(enumName)) mode = e;
+                if (mode == null) throw new IllegalStateException("no " + enumName + " mode");
+                Object cur = getMode.invoke(range);
+                if (!liteLayerSet) liteLayerPrevMode = cur;
+                setMode.invoke(range, mode);
+                int yLo = baseY + lo - 1, yHi = baseY + hi - 1;
+                if (want.equals("SINGLE")) {
+                    var setPos = method(rc, "setSingleBoundaryLayerPosition", 1);
+                    if (setPos == null) setPos = method(rc, "setLayerSingle", 1);
+                    if (setPos == null) throw new IllegalStateException("unsupported Litematica version");
+                    setPos.invoke(range, yLo);
+                } else if (want.equals("RANGE")) {
+                    var setMin = method(rc, "setLayerRangeMin", 2); boolean two = setMin != null;
+                    if (!two) setMin = method(rc, "setLayerRangeMin", 1);
+                    var setMax = method(rc, two ? "setLayerRangeMax" : "setLayerRangeMax", two ? 2 : 1);
+                    if (setMin == null || setMax == null) throw new IllegalStateException("unsupported Litematica version");
+                    // max first, then min, then max again: each setter clamps against the other one
+                    if (two) { setMax.invoke(range, yHi, true); setMin.invoke(range, yLo, true); setMax.invoke(range, yHi, true); }
+                    else { setMax.invoke(range, yHi); setMin.invoke(range, yLo); setMax.invoke(range, yHi); }
+                }
+                liteLayerSet = true; liteLayerKey = key;
+            } catch (Throwable t) {
+                Throwable c = t.getCause() != null ? t.getCause() : t;
+                if (!liteLayerWarned) { liteLayerWarned = true; U.chat("Could not set Litematica's render layers (" + c.getClass().getSimpleName() + ": " + c.getMessage() + "). Use its own layer controls."); }
+            }
+        }
+
+        /** Gives Litematica the render mode it had before we changed it (only if we changed it). */
+        private void restoreLiteLayer() {
+            if (!liteLayerSet) return;
+            Object prev = liteLayerPrevMode;
+            liteLayerSet = false; liteLayerPrevMode = null; liteLayerKey = "";
+            if (prev == null || !FabricLoader.getInstance().isModLoaded("litematica")) return;
+            try {
+                Object range = Class.forName("fi.dy.masa.litematica.data.DataManager").getMethod("getRenderLayerRange").invoke(null);
+                var setMode = method(range.getClass(), "setLayerMode", 1);
+                if (setMode != null) setMode.invoke(range, prev);
+            } catch (Throwable ignored) {}
+        }
+
         private void removeLite() {
             Object pl = litePlacement;
             litePlacement = null; liteKey = "";
@@ -1076,7 +1146,7 @@ public final class BuildModules {
 
         /** Keeps a Litematica placement in sync with the file / origin / rotation chosen here, so Litematica renders the schematic. */
         private void syncLitematica() {
-            if (!useLitematica.get() || schem == null || origin == null || file.is("None")) return;
+            if (!useLitematica.get() || schem == null || origin == null || file.is("None")) { restoreLiteLayer(); return; }
             if (!FabricLoader.getInstance().isModLoaded("litematica")) {
                 if (!liteWarned) { liteWarned = true; U.chat("Litematica is not installed - turn on \"Built-in preview\" to see the schematic."); }
                 return;
@@ -1092,6 +1162,7 @@ public final class BuildModules {
                 default -> b;
             };
             String key = file.value + "|" + lo.getX() + "," + lo.getY() + "," + lo.getZ() + "|" + rot;
+            syncLiteLayer(b.getY());   // the render layer is global in Litematica, so it is kept in sync even when the placement itself did not change
             if (key.equals(liteKey) || key.equals(liteFailKey)) return;
             removeLite();
             try {
