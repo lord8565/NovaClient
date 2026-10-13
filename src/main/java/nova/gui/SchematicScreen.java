@@ -53,6 +53,8 @@ public class SchematicScreen extends Screen {
     private record Hit(int x, int y, int w, int h, IntConsumer click, Setting.Num drag) {}
 
     private static int tab;
+    /** Layer picker mode: 0 = all layers, 1 = one layer, 2 = range, -1 = derive from the settings. */
+    private static int layerUi = -1;
     private static final double[] scrollT = new double[3], scrollV = new double[3];
     private static double fileScrollT, fileScrollV;
     private static final Set<String> openGroups = new HashSet<>(Set.of("Placement"));
@@ -80,6 +82,7 @@ public class SchematicScreen extends Screen {
         ph = Math.min(height - 30, Math.max(ClientModules.Layout.height(), 330));
         px = (width - pw) / 2;
         py = (height - ph) / 2;
+        layerUi = -1;
         if (mod.fileNames().isEmpty()) mod.reloadFiles();
     }
 
@@ -364,6 +367,7 @@ public class SchematicScreen extends Screen {
         drawFiles(ctx, x, y, leftW, cardH, acc);
         int yy = y;
         yy += drawOverview(ctx, rx, yy, rightW, acc) + GAP;
+        yy += drawLayers(ctx, rx, yy, rightW, acc) + GAP;
         yy += drawPosition(ctx, rx, yy, rightW, acc);
         return Math.max(cardH, yy - y);
     }
@@ -452,9 +456,12 @@ public class SchematicScreen extends Screen {
         yy += 11;
         double rate = mod.blocksPerMinute();
         String sp = (rate > 0.5 ? Math.round(rate) + " blocks/min   ETA " + etaText(mod.etaSeconds()) : "Speed: -");
-        U.text(ctx, sp, tx, yy, A(DIM));
         int ly = mod.currentLayer();
-        if (ly > 0) { String l = "Layer " + ly + " / " + sz[1]; U.text(ctx, l, tx + iw - U.width(l), yy, A(DIM)); }
+        String lt = "";
+        if (ly > 0) lt = "Layer " + ly + " / " + sz[1];
+        else if (mod.layerLimited()) lt = mod.firstLayer() == mod.lastLayer() ? "Layer " + mod.firstLayer() + " only" : "Layers " + mod.firstLayer() + "-" + mod.lastLayer();
+        U.text(ctx, fit(sp, iw - (lt.isEmpty() ? 0 : U.width(lt) + 8)), tx, yy, A(DIM));
+        if (!lt.isEmpty()) U.text(ctx, lt, tx + iw - U.width(lt), yy, A(mod.layerLimited() ? acc : DIM));
         yy += 11;
         String line; int lc = DIM;
         if (!mod.errorLine().isEmpty()) { line = "Error: " + mod.errorLine(); lc = RED; }
@@ -463,6 +470,116 @@ public class SchematicScreen extends Screen {
         else line = mod.statusLine();
         if (!line.isEmpty()) U.text(ctx, fit(line, iw), tx, yy, A(lc));
         return h;
+    }
+
+    /** Layer picker: build everything, one layer, or a range. Shows the choice, per-layer progress and how many blocks it covers. */
+    private int drawLayers(DrawContext ctx, int x, int y, int w, int acc) {
+        if (!mod.isLoaded()) {
+            int h0 = 40;
+            int y0 = card(ctx, x, y, w, h0, "Layers", acc);
+            U.text(ctx, fit("Load a schematic to choose which layers to build.", w - 18), x + 9, y0 + 2, A(DIM));
+            return h0;
+        }
+        final int M = Math.max(1, mod.size()[1]);
+        final int lo = mod.firstLayer(), hi = mod.lastLayer();
+        int derived = !mod.layerLimited() ? 0 : (lo == hi ? 1 : 2);
+        boolean ok = layerUi == derived || (layerUi == 2 && derived <= 1) || (layerUi == 1 && M == 1 && derived == 0);
+        if (layerUi < 0 || !ok) layerUi = derived;
+        final int ui = layerUi;
+
+        int h = 100;
+        int yy = card(ctx, x, y, w, h, "Layers", acc);
+        int tx = x + 8, iw = w - 16, lw = 62;
+
+        // mode switch
+        String[] modes = {"All", "One layer", "Range"};
+        U.text(ctx, "Build", tx + 1, yy + 4, A(TEXT));
+        segmented(ctx, tx + lw, yy, iw - lw, 16, modes, modes[ui], v -> {
+            if (v.equals("All")) { layerUi = 0; mod.setLayers(1, 0); }
+            else if (v.equals("One layer")) {
+                layerUi = 1;
+                int l = ui == 0 ? mod.firstOpenLayer() : lo;
+                mod.setLayers(l, l);
+            } else { layerUi = 2; }
+        }, acc, "layerMode");
+        yy += 21;
+
+        // selector row
+        if (ui == 0) {
+            U.text(ctx, fit("Whole schematic: layers 1 - " + M, iw), tx + 1, yy + 4, A(DIM));
+        } else if (ui == 1) {
+            int bw = 80, sw = iw - bw - 4;
+            layerStep(ctx, tx, yy, sw, 16, "Layer " + lo + " / " + M, true, d -> mod.setLayers(lo + d, lo + d), acc);
+            btn(ctx, tx + sw + 4, yy, bw, 16, "Lowest open", 0, () -> { int l = mod.firstOpenLayer(); mod.setLayers(l, l); }, acc);
+        } else {
+            int hw = (iw - 4) / 2;
+            layerStep(ctx, tx, yy, hw, 16, "From " + lo, true, d -> mod.setLayers(lo + d, hi), acc);
+            layerStep(ctx, tx + hw + 4, yy, iw - hw - 4, 16, "To " + hi, true, d -> mod.setLayers(lo, hi + d), acc);
+        }
+        yy += 21;
+
+        // layer strip: one column per layer (or per group of layers when there are more layers than pixels), bottom layer on the left
+        int sh = 12;
+        int n = Math.max(1, Math.min(M, iw));
+        Gfx.rrect(ctx, tx, yy, iw, sh, 3, A(slotC()));
+        int hovLayer = -1;
+        if (hov(tx, yy, iw, sh)) hovLayer = Math.max(1, Math.min(M, 1 + (int) ((mouseX - tx) * (long) M / iw)));
+        for (int k = 0; k < n; k++) {
+            int l0 = (int) ((long) k * M / n), l1 = Math.max(l0 + 1, (int) ((long) (k + 1) * M / n));   // 0-based, l1 exclusive
+            int cx0 = tx + (int) ((long) k * iw / n), cx1 = tx + (int) ((long) (k + 1) * iw / n);
+            int cw = Math.max(1, cx1 - cx0 - (n <= iw / 3 ? 1 : 0));
+            int tot = 0, bl = 0;
+            for (int l = l0; l < l1; l++) { tot += mod.layerTotal(l + 1); bl += mod.layerBuilt(l + 1); }
+            float frac = tot <= 0 ? 0f : Math.min(1f, bl / (float) tot);
+            boolean sel = l1 > lo - 1 && l0 < hi;   // overlaps the chosen layers
+            int col;
+            if (sel) col = Gfx.mix(acc, GREEN, frac);
+            else col = Gfx.mix(trackC(), GREEN, 0.55f * frac);
+            int ch = sel ? sh : sh - 4, cy = yy + (sh - ch) / 2;
+            Gfx.rrect(ctx, cx0, cy, cw, ch, 0, A(sel ? col : Gfx.a(col, 0.8f)));
+        }
+        if (hovLayer > 0) {
+            int hx = tx + (int) ((long) (hovLayer - 1) * iw / M);
+            Gfx.rrect(ctx, hx, yy - 1, Math.max(2, iw / M), sh + 2, 0, A(0xFFFFFFFF));
+        }
+        addHit(new Hit(tx, yy, iw, sh, b -> {
+            int l = Math.max(1, Math.min(M, 1 + (int) ((mouseX - tx) * (long) M / iw)));
+            snd(1.0f);
+            if (ui == 0) { layerUi = 1; mod.setLayers(l, l); }
+            else if (ui == 1) mod.setLayers(l, l);
+            else if (b == 1 || Math.abs(l - hi) < Math.abs(l - lo)) mod.setLayers(lo, l);
+            else mod.setLayers(l, hi);
+        }, null));
+        yy += sh + 5;
+
+        // info line: hovered layer, otherwise the selection
+        String info;
+        if (hovLayer > 0) {
+            int t = mod.layerTotal(hovLayer), bl = mod.layerBuilt(hovLayer);
+            info = "Layer " + hovLayer + ": " + (t > 0 ? bl + " / " + t + " blocks" : "no blocks");
+        } else {
+            long tot = 0, bl = 0;
+            for (int l = lo; l <= hi; l++) { tot += mod.layerTotal(l); bl += mod.layerBuilt(l); }
+            String what = ui == 0 ? "All layers" : lo == hi ? "Layer " + lo : "Layers " + lo + "-" + hi;
+            info = tot > 0 ? what + ": " + String.format("%,d / %,d", bl, tot) + " blocks (" + Math.round(100f * bl / tot) + "%)" : what + (mod.originPos() == null ? " (set the origin to count blocks)" : "");
+        }
+        U.text(ctx, fit(info, iw), tx + 1, yy, A(hovLayer > 0 ? TEXT : DIM));
+        return h;
+    }
+
+    /** - / + selector with a text in the middle. Left click +-1, right click +-8. */
+    private void layerStep(DrawContext ctx, int x, int y, int w, int h, String text, boolean lit, IntConsumer step, int acc) {
+        Gfx.rrect(ctx, x, y, w, h, 5, A(slotC()));
+        int bw = 15;
+        boolean hm = hov(x, y, bw, h), hp = hov(x + w - bw, y, bw, h);
+        if (hm) Gfx.rrect(ctx, x + 1, y + 1, bw - 1, h - 2, 4, A(Gfx.a(acc, 0.28f)));
+        if (hp) Gfx.rrect(ctx, x + w - bw, y + 1, bw - 1, h - 2, 4, A(Gfx.a(acc, 0.28f)));
+        U.text(ctx, "-", x + bw / 2 - 2, y + (h - 8) / 2, A(TEXT));
+        U.text(ctx, "+", x + w - bw / 2 - 3, y + (h - 8) / 2, A(TEXT));
+        String t = fit(text, w - bw * 2 - 4);
+        U.text(ctx, t, x + w / 2 - U.width(t) / 2, y + (h - 8) / 2, A(lit ? acc : DIM));
+        addHit(new Hit(x, y, bw, h, b -> { snd(0.95f); step.accept(b == 1 ? -8 : -1); }, null));
+        addHit(new Hit(x + w - bw, y, bw, h, b -> { snd(1.05f); step.accept(b == 1 ? 8 : 1); }, null));
     }
 
     private int drawPosition(DrawContext ctx, int x, int y, int w, int acc) {

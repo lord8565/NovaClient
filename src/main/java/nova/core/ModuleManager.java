@@ -17,6 +17,7 @@ public final class ModuleManager {
     private static final Map<Mod, Boolean> keyDown = new HashMap<>();
     private static final Logger LOG = LoggerFactory.getLogger("nova");
     private static boolean guiKeyDown;
+    private static final Set<Mod> hudFailed = new HashSet<>();
     private ModuleManager() {}
 
     private static void add(Mod... ms) { MODULES.addAll(Arrays.asList(ms)); }
@@ -94,7 +95,8 @@ public final class ModuleManager {
         if (mc.player == null || mc.options.hudHidden) return;
         for (Mod m : MODULES) {
             if (!m.enabled) continue;
-            try { m.onHud(ctx); } catch (Throwable ignored) {}
+            try { m.onHud(ctx); }
+            catch (Throwable t) { if (hudFailed.add(m)) LOG.error("HUD of {} threw (reported once)", m.name, t); }
         }
     }
 }

@@ -167,10 +167,13 @@ public final class BuildModules {
         // clicks = {clicks, last tick} per target, to notice blocks the server keeps refusing
         final Map<Integer, Integer> strikes = new HashMap<>();
         final Map<Integer, int[]> clicks = new HashMap<>();
-        int lastDoneSeen = -1, lastBuiltTick, noPlaceTicks;
+        int lastDoneSeen = -1, lastBuiltTick, noPlaceTicks, aimWait;
+        boolean aiming;   // set by placeOne(): the view was still turning towards the target this tick
         // restock loop breaker: pause chest trips when trips follow each other without a single block being built in between
         int missingTick = -9999;
         int rangeSkipped, recSkipped, activeTicks;
+        // per schematic layer (y, 0-based): blocks in total / already right in the world. Filled by recount() for ALL layers (also the ones outside the chosen range) so the window can show them.
+        int[] layerTot = new int[0], layerDoneN = new int[0], recLayerTot = new int[0], recLayerDoneN = new int[0];
         boolean announced;
         int restockPauseUntil, lastTripDone = -1, fruitlessTrips, shortTick = -9999;
         boolean shortCache;
@@ -205,7 +208,9 @@ public final class BuildModules {
             return null;
         }
 
-        void refresh() {
+        void refresh() { refresh(true); }
+
+        void refresh(boolean say) {
             List<String> names = new ArrayList<>();
             for (Path d : dirs()) {
                 try { Files.createDirectories(d); } catch (Exception ignored) {}
@@ -218,7 +223,7 @@ public final class BuildModules {
             if (names.isEmpty()) names.add("None");
             file.setModes(names.toArray(new String[0]));
             status = names.get(0).equals("None") ? "No .litematic files found in the schematics folder." : names.size() + " file(s) found.";
-            U.chat(status);
+            if (say) U.chat(status);
         }
 
         void loadSelected() {
@@ -238,7 +243,7 @@ public final class BuildModules {
             }
         }
 
-        void unload() { chestMem.clear(); schem = null; loadedFile = ""; needTotal.clear(); layerNeed = new HashMap<>(); rateLog.clear(); view.clear(); done.clear(); nextPos = null; curIdx = -1; ghosts = List.of(); keys = new long[0]; surf.clear(); resetWalk(); removeLite(); fillers.clear(); fillTarget = null; junk.clear(); ours.clear(); gaveUp.clear(); fixTries.clear(); strikes.clear(); clicks.clear(); wrongCount = 0; layerMin = 0; layerCacheTick = -1; removeCacheTick = -1; status = "Unloaded."; }
+        void unload() { chestMem.clear(); schem = null; loadedFile = ""; needTotal.clear(); layerNeed = new HashMap<>(); rateLog.clear(); view.clear(); done.clear(); nextPos = null; curIdx = -1; ghosts = List.of(); keys = new long[0]; surf.clear(); resetWalk(); removeLite(); fillers.clear(); fillTarget = null; junk.clear(); ours.clear(); gaveUp.clear(); fixTries.clear(); strikes.clear(); clicks.clear(); wrongCount = 0; layerMin = 0; layerCacheTick = -1; removeCacheTick = -1; layerTot = new int[0]; layerDoneN = new int[0]; status = "Unloaded."; }
 
         void originHere() {
             if (mc.player == null) return;
@@ -256,7 +261,7 @@ public final class BuildModules {
             } else U.chat("Look at a block first.");
         }
 
-        private void resetProgress() { done.clear(); firstPending = 0; doneCount = 0; curIdx = -1; tick = 0; recPos = -1; ghosts = List.of(); badTargets.clear(); strikes.clear(); clicks.clear(); lastDoneSeen = -1; noPlaceTicks = 0; restockPauseUntil = 0; lastTripDone = -1; fruitlessTrips = 0; shortTick = -9999; junk.clear(); ours.clear(); gaveUp.clear(); fixTries.clear(); wrongCount = 0; layerMin = 0; layerCacheTick = -1; removeCacheTick = -1; lastAct = lastBuiltTick = walkClock; stuckCount = 0; activeTicks = 0; announced = false; rangeSkipped = 0; resetWalk(); }
+        private void resetProgress() { done.clear(); firstPending = 0; doneCount = 0; curIdx = -1; tick = 0; recPos = -1; ghosts = List.of(); badTargets.clear(); strikes.clear(); clicks.clear(); lastDoneSeen = -1; noPlaceTicks = 0; restockPauseUntil = 0; lastTripDone = -1; fruitlessTrips = 0; shortTick = -9999; junk.clear(); ours.clear(); gaveUp.clear(); fixTries.clear(); wrongCount = 0; layerMin = 0; layerCacheTick = -1; removeCacheTick = -1; lastAct = lastBuiltTick = walkClock; stuckCount = 0; activeTicks = 0; announced = false; rangeSkipped = 0; layerTot = new int[0]; layerDoneN = new int[0]; resetWalk(); }
 
         void rebuildView() {
             if (schem == null) return;
@@ -318,7 +323,7 @@ public final class BuildModules {
 
         private BlockPos world(Litematic.Entry e) { return base().add(e.x(), e.y(), e.z()); }
 
-        @Override public void onEnable() { lastAct = lastBuiltTick = walkClock; lastDoneSeen = -1; refresh(); if (schem == null && !file.is("None")) loadSelected(); }
+        @Override public void onEnable() { lastAct = lastBuiltTick = walkClock; lastDoneSeen = -1; refresh(false); if (schem == null && !file.is("None")) loadSelected(); }
         @Override public void onDisable() { nextPos = null; curIdx = -1; ghosts = List.of(); resetWalk(); }
 
         private int findSlot(Item it) {
@@ -872,13 +877,17 @@ public final class BuildModules {
         /** Recounts progress / missing items in slices of a few thousand blocks per tick (a full pass in one tick caused lag spikes). */
         private void recount() {
             if (base() == null) { recPos = -1; return; }
-            if (recPos < 0) { recPos = 0; recDone = new BitSet(); recCount = 0; recWrong = 0; recNeed = new HashMap<>(); recLayerNeed = new HashMap<>(); recLayerMap = null; recSkipped = 0; }
+            if (recPos < 0) { recPos = 0; recDone = new BitSet(); recCount = 0; recWrong = 0; recNeed = new HashMap<>(); recLayerNeed = new HashMap<>(); recLayerMap = null; recSkipped = 0; recLayerTot = new int[Math.max(1, vy)]; recLayerDoneN = new int[Math.max(1, vy)]; }
             int end = Math.min(view.size(), recPos + 3000);
             for (; recPos < end; recPos++) {
                 Litematic.Entry e = view.get(recPos);
-                if (outOfRange(e.y())) { recDone.set(recPos); recCount++; recSkipped++; continue; }
                 BlockPos rwp = world(e);
                 BlockState cur = mc.world.getBlockState(rwp);
+                if (e.y() >= 0 && e.y() < recLayerTot.length) {   // per-layer counts for the layer picker (every layer, in range or not)
+                    recLayerTot[e.y()]++;
+                    if (sameState(e.state(), cur) || skipState(e.state()) || gaveUp.contains(rwp) || e.state().getBlock().asItem() == Items.AIR) recLayerDoneN[e.y()]++;
+                }
+                if (outOfRange(e.y())) { recDone.set(recPos); recCount++; recSkipped++; continue; }
                 if (sameState(e.state(), cur) || skipState(e.state()) || gaveUp.contains(rwp)) { recDone.set(recPos); recCount++; continue; }
                 Item it = e.state().getBlock().asItem();
                 if (it == Items.AIR) { recDone.set(recPos); recCount++; continue; }   // nothing to place for it (portal, fire, ...)
@@ -895,6 +904,7 @@ public final class BuildModules {
             needTotal = new LinkedHashMap<>(recNeed);
             layerNeed = recLayerNeed;
             rangeSkipped = recSkipped;
+            layerTot = recLayerTot; layerDoneN = recLayerDoneN;
             rebuildMissing();
         }
 
@@ -1029,8 +1039,7 @@ public final class BuildModules {
 
         /** Layers are 1-based for the user ("First layer" / "Last layer"); y is the 0-based schematic row. Blocks outside the range are left alone. */
         private boolean outOfRange(int y) {
-            int lo = fromLayer.getInt(), hi = toLayer.getInt();
-            return (lo > 1 && y < lo - 1) || (hi > 0 && y > hi - 1);
+            return y < firstLayer() - 1 || y > lastLayer() - 1;   // same clamping as the window (First > Last or a taller old value cannot hide everything)
         }
 
         /** Park a target. Every repeat doubles the time (base, 2x, 4x ... 32x) so blocks that really cannot be reached stop coming back first. */
@@ -1966,10 +1975,12 @@ public final class BuildModules {
                 if (!placeOne(plan)) {
                     // a block we can never seem to click gets parked (longer every time) instead of blocking everything.
                     // The counter is not per block: it used to restart whenever pick() switched to another block, so two failing blocks could take turns forever.
-                    if (++noPlaceTicks > 40) { park(plan.idx(), 200); curIdx = -1; noPlaceTicks = 0; }
+                    // Ticks spent still turning towards the target (slow "Aim speed") do not count as failures, only a much longer cap applies to them.
+                    boolean giveUp = aiming ? ++aimWait > 200 : ++noPlaceTicks > 40;
+                    if (giveUp) { park(plan.idx(), 200); curIdx = -1; noPlaceTicks = 0; aimWait = 0; }
                     break;
                 }
-                failCount = 0; noPlaceTicks = 0;
+                failCount = 0; noPlaceTicks = 0; aimWait = 0;
                 if (tooManyClicks(plan.idx())) { park(plan.idx(), 200); curIdx = -1; }   // clicked again and again but the block never stays: server refuses it
                 placed.add(plan.pos());
                 cd = delay.getInt() + (humanize.get() && delay.getInt() > 0 ? (int) Math.round(U.rand(0, 1.5)) : 0);
@@ -1978,6 +1989,7 @@ public final class BuildModules {
 
         private boolean placeOne(Plan pl) {
             var p = mc.player;
+            aiming = false;
             if (!p.getMainHandStack().isOf(pl.item())) {
                 // switching to another block: do NOT click in the same tick, the server must see the new item / slot first
                 // (otherwise it places the block that was in your hand before)
@@ -1993,6 +2005,7 @@ public final class BuildModules {
                 float[] t = U.rotTo(pl.hit());
                 float[] r = U.smoothRot(p.getYaw(), p.getPitch(), t[0], t[1], aimSpeed.get(), maxTurn.get(), humanize.get(), true);
                 p.setYaw(r[0]); p.setPitch(r[1]);
+                aiming = Math.abs(MathHelper.wrapDegrees(r[0] - yaw0)) > 0.3f || Math.abs(r[1] - pitch0) > 0.3f;
                 Vec3d end = eye.add(p.getRotationVec(1.0F).multiply(reach.get() + 0.5));
                 Optional<Vec3d> h = new Box(pl.against()).raycast(eye, end);
                 if (h.isEmpty()) return false;
@@ -2058,6 +2071,34 @@ public final class BuildModules {
             int ly = layerY();
             return ly == Integer.MIN_VALUE ? -1 : ly + 1;
         }
+        /** First / last layer (1-based) that is being built. Last layer is the real top when "Last layer" is 0 (= all). */
+        public int firstLayer() { return Math.max(1, Math.min(fromLayer.getInt(), Math.max(1, vy))); }
+        public int lastLayer() { int hi = toLayer.getInt(), m = Math.max(1, vy); return hi <= 0 || hi > m ? m : Math.max(hi, firstLayer()); }
+        /** True when only part of the schematic is selected. */
+        public boolean layerLimited() { return schem != null && (firstLayer() > 1 || lastLayer() < vy); }
+        /** Blocks of a layer (1-based) and how many of them are already right in the world. 0 until the first recount has finished. */
+        public int layerTotal(int layer) { int y = layer - 1; return y >= 0 && y < layerTot.length ? layerTot[y] : 0; }
+        public int layerBuilt(int layer) { int y = layer - 1; return y >= 0 && y < layerDoneN.length ? layerDoneN[y] : 0; }
+        /** Lowest layer (1-based) that still has something to build, 1 when unknown. */
+        public int firstOpenLayer() {
+            for (int y = 0; y < layerTot.length && y < layerDoneN.length; y++) if (layerDoneN[y] < layerTot[y]) return y + 1;
+            return 1;
+        }
+        /** Choose the layers to build (1-based, to = 0 means up to the top). Re-counts straight away so progress, materials and the window follow. */
+        public void setLayers(int from, int to) {
+            int m = Math.max(1, vy);
+            from = Math.max(1, Math.min(from, m));
+            if (to > 0) to = Math.max(from, Math.min(to, m));
+            if (from <= 1 && to >= m) to = 0;
+            fromLayer.set(from); toLayer.set(to);
+            layersChanged();
+            Config.save();
+        }
+        private void layersChanged() {
+            recPos = -1; tick = 0; layerMin = 0; layerCacheTick = -1; shortTick = -9999; missingTick = -9999;
+            curIdx = -1; nextPos = null; ghosts = List.of(); badTargets.clear(); strikes.clear(); clicks.clear(); noPlaceTicks = 0; lastAct = walkClock; stuckCount = 0;
+            resetWalk();
+        }
         public double blocksPerMinute() {
             if (rateLog.size() < 2) return 0;
             int[] a = rateLog.peekFirst(), b = rateLog.peekLast();
@@ -2118,6 +2159,7 @@ public final class BuildModules {
                 lines.add("Need " + en.getValue() + " " + Registries.ITEM.getId(en.getKey()).getPath().replace('_', ' '));
             }
             if (layerOn() && schem != null && origin != null) { int ly = layerY(); if (ly != Integer.MIN_VALUE) lines.add("Layer " + (ly + 1) + " / " + vy); }
+            if (layerLimited() && origin != null) { int lo = firstLayer(), hi = lastLayer(); lines.add((lo == hi ? "Layer " + lo + " only" : "Layers " + lo + "-" + hi) + " / " + vy); }
             if (restock.get() && !marked.isEmpty()) lines.add(markedCount() + " restock chest" + (markedCount() == 1 ? "" : "s") + " marked");
             if (!lastErr.isEmpty()) lines.add("Error: " + lastErr);
             if (wrongCount > 0 && fixWrong.get()) lines.add(wrongCount + " wrong block" + (wrongCount == 1 ? "" : "s"));

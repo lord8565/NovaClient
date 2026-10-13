@@ -4,7 +4,7 @@ Fabric, Minecraft 1.21.11. Open the GUI with **Right Shift**.
 
 ## Build
 1. https://fabricmc.net/develop -> 1.21.11, copy exact versions into `gradle.properties`.
-2. JDK 21, `gradle build` (needs Gradle 9.x; or `./gradlew build` if you have the wrapper). After building, check the jar is not empty: `unzip -l build/libs/nova-client-2.8.2.jar` must list `fabric.mod.json` and `nova/*.class`. Jar: `build/libs/nova-client-2.8.2.jar` (not `-sources`). Put it in `mods/` with Fabric API.
+2. JDK 21, `gradle build` (needs Gradle 9.x; or `./gradlew build` if you have the wrapper). After building, check the jar is not empty: `unzip -l build/libs/nova-client-2.8.4.jar` must list `fabric.mod.json` and `nova/*.class`. Jar: `build/libs/nova-client-2.8.4.jar` (not `-sources`). Put it in `mods/` with Fabric API.
 
 ## GUI
 Icon tabs on the left, module cards in two columns. Left click = toggle, right click = fold out settings,
@@ -28,6 +28,22 @@ It turns smoothly to each face (Aim speed / Max turn), only clicks when the cros
   - *Settings*: all Schematic settings in foldable groups (Placement, Position, Restock, Walking & filler, Fixing, Display). Anything not in a group lands under "Other", so nothing is hidden.
   - A status pill in the header shows NO FILE / NO ORIGIN / READY / BUILDING / DONE, and the footer tells you the next step. "< Modules" goes back to the normal menu.
 - Builder logic is unchanged apart from a small speed tracker (blocks finished per minute) and read-only accessors for the window.
+
+## Changes in 2.8.4
+- **Choose which layer to build, in the builder window.** Build tab > new *Layers* card: *All*, *One layer* or *Range*.
+  - *One layer*: `-` / `+` steps through the layers (right click = 8), *Lowest open* jumps to the lowest layer that is not finished yet.
+  - *Range*: separate *From* / *To* steppers.
+  - A strip under the buttons shows every layer (bottom = left): the chosen layers are highlighted, the colour turns green as a layer gets built. Click it to pick a layer (in Range mode the nearest end moves, right click moves *To*); hover shows that layer's block count.
+  - The info line shows `Layer 5: 120 / 340 blocks (35%)` for the selection. The Overview card and the in-game HUD now say `Layer N only` / `Layers A-B` when only part of the schematic is selected.
+  - Changing the layers recounts straight away (progress, materials and the restock list follow at once instead of after ~2 s) and drops targets from the old selection.
+  - Same two settings as before (*First layer* / *Last layer*, Settings tab); a First layer above the schematic height or above Last layer can no longer hide the whole schematic.
+- Source only: edited without the game libraries, run `gradle build` and check the log before using it.
+
+## Changes in 2.8.3
+- **Slow aiming no longer parks blocks.** While the view was still turning towards a block (low "Aim speed" / small "Max turn"), every tick counted as a failed placement, so after 40 ticks the builder gave up on a perfectly good block. Ticks spent turning now have their own, much longer limit (200 ticks); real failures still park after 40.
+- Switching the module on no longer prints "N file(s) found" in chat every time (the Refresh button still does).
+- A module's HUD code that throws is now logged once instead of being swallowed silently.
+- Source only: this version was edited without a compiler, run `gradle build` and check the log before using it.
 
 ## Changes in 2.8.2
 - **Less robotic aiming.** The view now turns with limited acceleration (speeds up, glides, settles, never overshoots) and a slow drift instead of a fixed share of the angle plus white noise per tick. With nothing to place, the view turns gently towards where you walk (`Look where I walk`).
